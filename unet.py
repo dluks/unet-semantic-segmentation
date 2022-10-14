@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# %%
 import glob
 import os
 import datetime
@@ -39,6 +38,7 @@ tf.get_logger().setLevel("ERROR")
 
 
 def patch_train_label(raster, labels, img_size, channels=False, merge_channel=False):
+    assert len(raster) > 0, "Raster list is empty."
     samp_rast = tiff.imread(raster[0])
     img_base_size = samp_rast.shape[0]
     n = len(raster)
@@ -199,9 +199,8 @@ def callbacks():
     return cb
 
 
-# %%
-
-for set_name in SET_NAMES:
+def train_set(set_name):
+    # DATASET
     # Patchify hand-labeled data PLUS NIR data
     HAND_RGB_DIR = os.path.join(DATA_DIR, "train_rgb")
     HAND_LABEL_DIR = os.path.join(DATA_DIR, "label")
@@ -250,7 +249,7 @@ for set_name in SET_NAMES:
     y_test: {y_test.shape}"
     )
 
-    # %%
+    # MODEL
     cb = callbacks()
 
     # Data structure
@@ -297,9 +296,6 @@ for set_name in SET_NAMES:
         # Test the model on the preserved test data
         y_pred = model.predict(X_test)
 
-        # Convert sigmoid probability to classification
-        y_pred_thresholded = y_pred > 0.5
-
         # Get the IoU for the test data
         biou = BinaryIoU(target_class_ids=[0, 1], threshold=0.5)
         biou.update_state(y_pred=y_pred, y_true=y_test)
@@ -327,3 +323,7 @@ for set_name in SET_NAMES:
 
         # Save the updated array each iteration
         np.save(f"nfolds_{N_FOLDS}CV_{set_name}.npy", data)
+
+
+for set_name in tqdm(SET_NAMES, desc="Set", total=len(SET_NAMES)):
+    train_set(set_name)
