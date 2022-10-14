@@ -26,11 +26,11 @@ from tqdm import tqdm
 # Config
 BASE_LOGS_DIR = "logs"
 DATA_DIR = "../../data/"
-SET_NAMES = ["loose", "strict"]
+SET_NAMES = ["strict", "loose"]
 
 # Hyperparams
-N_FOLDS = 2
-EPOCHS = 2
+N_FOLDS = 10
+EPOCHS = 75
 ETA = 1e-2
 BATCH_SIZE = 16
 
@@ -124,10 +124,11 @@ def data_augmentation():
     return augs
 
 
-def build_unet(input_shape):
+def build_unet(input_shape, aug=False):
     inputs = Input(input_shape)
-    augmented = data_augmentation()(inputs)
-    s1, p1 = encoder_block(augmented, 64)
+    if aug:
+        inputs = data_augmentation()(inputs)
+    s1, p1 = encoder_block(inputs, 64)
     s2, p2 = encoder_block(p1, 128)
     s3, p3 = encoder_block(p2, 256)
     s4, p4 = encoder_block(p3, 512)
@@ -142,7 +143,14 @@ def build_unet(input_shape):
 
 
 def train_unet(
-    X_train, y_train, X_test, y_test, batch_size=16, epochs=100, eta=1e-2, cb=None
+    X_train,
+    y_train,
+    X_test,
+    y_test,
+    batch_size=16,
+    epochs=100,
+    eta=1e-2,
+    cb=None,
 ):
     input_shape = X_train.shape[1:]
     model = build_unet(input_shape)
@@ -165,10 +173,10 @@ def train_unet(
     return model, history
 
 
-def callbacks():
+def callbacks(name):
     cb = []
     now = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    LOGS_DIR = os.path.join(BASE_LOGS_DIR, now)
+    LOGS_DIR = os.path.join(BASE_LOGS_DIR, f"{now}_{name}")
     if not os.path.exists(LOGS_DIR):
         os.makedirs(LOGS_DIR)
     tensorboard = keras.callbacks.TensorBoard(
@@ -176,7 +184,7 @@ def callbacks():
         histogram_freq=1,
     )
     checkpoint = keras.callbacks.ModelCheckpoint(
-        os.path.join(LOGS_DIR, "best_wg.h5"),
+        os.path.join(LOGS_DIR, f"{name}_best_wg.h5"),
         save_best_only=True,
         mode="min",
         monitor="val_loss",
@@ -202,8 +210,9 @@ def callbacks():
 def train_set(set_name):
     # DATASET
     # Patchify hand-labeled data PLUS NIR data
-    HAND_RGB_DIR = os.path.join(DATA_DIR, "train_rgb")
-    HAND_LABEL_DIR = os.path.join(DATA_DIR, "label")
+    HAND_DIR = os.path.join(DATA_DIR, "hand")
+    HAND_RGB_DIR = os.path.join(HAND_DIR, "rgb")
+    HAND_LABEL_DIR = os.path.join(HAND_DIR, "label")
 
     patch_rgb = glob.glob(os.path.join(HAND_RGB_DIR, "*.tif"))
     patch_label = glob.glob(os.path.join(HAND_LABEL_DIR, "*.tif"))
@@ -250,7 +259,7 @@ def train_set(set_name):
     )
 
     # MODEL
-    cb = callbacks()
+    cb = callbacks(set_name)
 
     # Data structure
     stats = ["mean_biou", "tree_biou", "bg_biou"]
@@ -284,7 +293,7 @@ def train_set(set_name):
             batch_size=BATCH_SIZE,
             epochs=EPOCHS,
             eta=ETA,
-            cb=cb,
+            cb=cb
         )
 
         # # Loss and accuracies from each epoch
@@ -322,7 +331,7 @@ def train_set(set_name):
             data[i, s] = stat
 
         # Save the updated array each iteration
-        np.save(f"nfolds_{N_FOLDS}CV_{set_name}.npy", data)
+        np.save(f"stats/{N_FOLDS}folds_CV_{set_name}.npy", data)
 
 
 for set_name in tqdm(SET_NAMES, desc="Set", total=len(SET_NAMES)):
