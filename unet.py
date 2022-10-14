@@ -8,6 +8,7 @@ import numpy as np
 import tifffile as tiff
 from patchify import patchify
 from sklearn.model_selection import KFold, train_test_split
+import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras.layers import (
     Activation,
@@ -26,13 +27,15 @@ from tqdm import tqdm
 # Config
 BASE_LOGS_DIR = "logs"
 DATA_DIR = "../../data/"
-SET_NAME = "strict"
+SET_NAMES = ["loose", "strict"]
 
 # Hyperparams
 N_FOLDS = 2
 EPOCHS = 2
 ETA = 1e-2
 BATCH_SIZE = 16
+
+tf.get_logger().setLevel("ERROR")
 
 
 def patch_train_label(raster, labels, img_size, channels=False, merge_channel=False):
@@ -109,9 +112,22 @@ def decoder_block(input, skip_features, num_filters):
     return x
 
 
+def data_augmentation():
+    augs = keras.Sequential(
+        [
+            keras.layers.RandomFlip("horizontal_and_vertical"),
+            keras.layers.RandomRotation(0.5),
+            keras.layers.RandomContrast(0.1),
+            keras.layers.RandomBrightness(0.1),
+        ]
+    )
+    return augs
+
+
 def build_unet(input_shape):
     inputs = Input(input_shape)
-    s1, p1 = encoder_block(inputs, 64)
+    augmented = data_augmentation()(inputs)
+    s1, p1 = encoder_block(augmented, 64)
     s2, p2 = encoder_block(p1, 128)
     s3, p3 = encoder_block(p2, 256)
     s4, p4 = encoder_block(p3, 512)
@@ -184,126 +200,130 @@ def callbacks():
 
 
 # %%
-# Patchify hand-labeled data PLUS NIR data
-HAND_RGB_DIR = os.path.join(DATA_DIR, "train_rgb")
-HAND_LABEL_DIR = os.path.join(DATA_DIR, "label")
 
-patch_rgb = glob.glob(os.path.join(HAND_RGB_DIR, "*.tif"))
-patch_label = glob.glob(os.path.join(HAND_LABEL_DIR, "*.tif"))
-patch_rgb.sort()
-patch_label.sort()
+for set_name in SET_NAMES:
+    # Patchify hand-labeled data PLUS NIR data
+    HAND_RGB_DIR = os.path.join(DATA_DIR, "train_rgb")
+    HAND_LABEL_DIR = os.path.join(DATA_DIR, "label")
 
-data_train, data_label = patch_train_label(patch_rgb, patch_label, 128)
+    patch_rgb = glob.glob(os.path.join(HAND_RGB_DIR, "*.tif"))
+    patch_label = glob.glob(os.path.join(HAND_LABEL_DIR, "*.tif"))
+    patch_rgb.sort()
+    patch_label.sort()
 
-X_train, X_test, y_train, y_test = train_test_split(
-    data_train, data_label, test_size=0.33, shuffle=True, random_state=157
-)
+    data_train, data_label = patch_train_label(patch_rgb, patch_label, 128)
 
-print(
-    f"\nSizes with only hand-labeled data:\n\
-X_train: {X_train.shape}\n\
-y_train: {y_train.shape}\n\
-X_test: {X_test.shape}\n\
-y_test: {y_test.shape}"
-)
-
-# Patchify watershed data (pre-patchified)
-WS_DIR = os.path.join(DATA_DIR, "watershed")
-WS_RGBI_DIR = os.path.join(WS_DIR, "rgbi/strict/512")
-WS_LABEL_DIR = os.path.join(WS_DIR, "labels/strict/512")
-
-ws_rgbi = glob.glob(os.path.join(WS_RGBI_DIR, "*.tif"))
-ws_labels = glob.glob(os.path.join(WS_LABEL_DIR, "*.tif"))
-ws_rgbi.sort()
-ws_labels.sort()
-
-data_train, data_label = patch_train_label(ws_rgbi, ws_labels, 128, channels=3)
-
-X_train = np.concatenate((X_train, data_train), axis=0)
-y_train = np.concatenate((y_train, data_label), axis=0)
-
-print(
-    f"\nSizes after adding watershed data:\n\
-X_train: {X_train.shape}\n\
-y_train: {y_train.shape}\n\
-X_test: {X_test.shape}\n\
-y_test: {y_test.shape}"
-)
-
-# %%
-cb = callbacks()
-
-# Data structure
-stats = ["mean_biou", "tree_biou", "bg_biou"]
-data = np.zeros((N_FOLDS, len(stats)))
-
-# Initialize the KFold
-kf = KFold(n_splits=N_FOLDS, shuffle=True, random_state=7)
-
-for i, (itrain, itest) in enumerate(
-    tqdm(
-        kf.split(
-            X_train,
-            y_train,
-        ),
-        desc="K-Folds",
-        position=0,
-        leave=True,
-        total=N_FOLDS,
-    )
-):
-    X_train_fold = X_train[itrain]
-    y_train_fold = y_train[itrain]
-    X_test_fold = X_train[itest]
-    y_test_fold = y_train[itest]
-
-    model, history = train_unet(
-        X_train_fold,
-        y_train_fold,
-        X_test_fold,
-        y_test_fold,
-        batch_size=BATCH_SIZE,
-        epochs=EPOCHS,
-        eta=ETA,
-        cb=cb,
+    X_train, X_test, y_train, y_test = train_test_split(
+        data_train, data_label, test_size=0.33, shuffle=True, random_state=157
     )
 
-    # # Loss and accuracies from each epoch
-    # loss = history.history["loss"]
-    # val_loss = history.history["val_loss"]
-    # iou = history.history[list(history.history.keys())[1]]
-    # val_iou = history.history[list(history.history.keys())[3]]
+    print(
+        f"\nSizes with only hand-labeled data:\n\
+    X_train: {X_train.shape}\n\
+    y_train: {y_train.shape}\n\
+    X_test: {X_test.shape}\n\
+    y_test: {y_test.shape}"
+    )
 
-    # Test the model on the preserved test data
-    y_pred = model.predict(X_test)
+    # Patchify watershed data (pre-patchified)
+    WS_DIR = os.path.join(DATA_DIR, "watershed")
+    WS_RGBI_DIR = os.path.join(WS_DIR, f"rgbi/{set_name}/512")
+    WS_LABEL_DIR = os.path.join(WS_DIR, f"labels/{set_name}/512")
 
-    # Convert sigmoid probability to classification
-    y_pred_thresholded = y_pred > 0.5
+    ws_rgbi = glob.glob(os.path.join(WS_RGBI_DIR, "*.tif"))
+    ws_labels = glob.glob(os.path.join(WS_LABEL_DIR, "*.tif"))
+    ws_rgbi.sort()
+    ws_labels.sort()
 
-    # Get the IoU for the test data
-    biou = BinaryIoU(target_class_ids=[0, 1], threshold=0.5)
-    biou.update_state(y_pred=y_pred, y_true=y_test)
-    pred_biou = biou.result().numpy()
+    data_train, data_label = patch_train_label(ws_rgbi, ws_labels, 128, channels=3)
 
-    # only for trees
-    tree_biou = BinaryIoU(target_class_ids=[1], threshold=0.5)
-    tree_biou.update_state(y_pred=y_pred, y_true=y_test)
-    pred_tree_biou = tree_biou.result().numpy()
+    # Always use the hand-labeled test split as final test (outside KF CV) because
+    # we know it is higher quality
+    X_train = np.concatenate((X_train, data_train), axis=0)
+    y_train = np.concatenate((y_train, data_label), axis=0)
 
-    # only for non-tree pixel (background)
-    bg_biou = BinaryIoU(target_class_ids=[0], threshold=0.5)
-    bg_biou.update_state(y_pred=y_pred, y_true=y_test)
-    pred_bg_biou = bg_biou.result().numpy()
+    print(
+        f"\nSizes after adding watershed data:\n\
+    X_train: {X_train.shape}\n\
+    y_train: {y_train.shape}\n\
+    X_test: {X_test.shape}\n\
+    y_test: {y_test.shape}"
+    )
 
-    # Log the five stats according to their K-Fold and parameter iteration
-    stats = [
-        pred_biou,
-        pred_tree_biou,
-        pred_bg_biou,
-    ]
+    # %%
+    cb = callbacks()
 
-    for s, stat in enumerate(stats):
-        data[i, s] = stat
+    # Data structure
+    stats = ["mean_biou", "tree_biou", "bg_biou"]
+    data = np.zeros((N_FOLDS, len(stats)))
 
-    # Save the updated array each iteration
-    np.save(f"nfolds_{N_FOLDS}_{SET_NAME}.npy", data)
+    # Initialize the KFold
+    kf = KFold(n_splits=N_FOLDS, shuffle=True, random_state=7)
+
+    for i, (itrain, itest) in enumerate(
+        tqdm(
+            kf.split(
+                X_train,
+                y_train,
+            ),
+            desc="K-Folds",
+            position=0,
+            leave=True,
+            total=N_FOLDS,
+        )
+    ):
+        X_train_fold = X_train[itrain]
+        y_train_fold = y_train[itrain]
+        X_test_fold = X_train[itest]
+        y_test_fold = y_train[itest]
+
+        model, history = train_unet(
+            X_train_fold,
+            y_train_fold,
+            X_test_fold,
+            y_test_fold,
+            batch_size=BATCH_SIZE,
+            epochs=EPOCHS,
+            eta=ETA,
+            cb=cb,
+        )
+
+        # # Loss and accuracies from each epoch
+        # loss = history.history["loss"]
+        # val_loss = history.history["val_loss"]
+        # iou = history.history[list(history.history.keys())[1]]
+        # val_iou = history.history[list(history.history.keys())[3]]
+
+        # Test the model on the preserved test data
+        y_pred = model.predict(X_test)
+
+        # Convert sigmoid probability to classification
+        y_pred_thresholded = y_pred > 0.5
+
+        # Get the IoU for the test data
+        biou = BinaryIoU(target_class_ids=[0, 1], threshold=0.5)
+        biou.update_state(y_pred=y_pred, y_true=y_test)
+        pred_biou = biou.result().numpy()
+
+        # only for trees
+        tree_biou = BinaryIoU(target_class_ids=[1], threshold=0.5)
+        tree_biou.update_state(y_pred=y_pred, y_true=y_test)
+        pred_tree_biou = tree_biou.result().numpy()
+
+        # only for non-tree pixel (background)
+        bg_biou = BinaryIoU(target_class_ids=[0], threshold=0.5)
+        bg_biou.update_state(y_pred=y_pred, y_true=y_test)
+        pred_bg_biou = bg_biou.result().numpy()
+
+        # Log the five stats according to their K-Fold and parameter iteration
+        stats = [
+            pred_biou,
+            pred_tree_biou,
+            pred_bg_biou,
+        ]
+
+        for s, stat in enumerate(stats):
+            data[i, s] = stat
+
+        # Save the updated array each iteration
+        np.save(f"nfolds_{N_FOLDS}CV_{set_name}.npy", data)
