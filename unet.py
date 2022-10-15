@@ -26,11 +26,11 @@ from tqdm import tqdm
 # Config
 BASE_LOGS_DIR = "logs"
 DATA_DIR = "../../data/"
-SET_NAMES = ["strict", "loose"]
+SET_NAMES = ["masked"]
 
 # Hyperparams
 N_FOLDS = 10
-EPOCHS = 75
+EPOCHS = 50
 ETA = 1e-2
 BATCH_SIZE = 16
 
@@ -201,13 +201,17 @@ def callbacks(name):
         cooldown=1,
         min_lr=0.00001,
     )
+    log = keras.callbacks.CSVLogger(os.path.join(LOGS_DIR, f"{now}_{name}_history.csv"))
     cb.append(tensorboard)
     cb.append(checkpoint)
     cb.append(lr_decay)
+    cb.append(log)
     return cb
 
 
-def train_set(set_name):
+def train_set(set_name, rgb_override=False):
+    if not rgb_override:
+        rgb_override = set_name
     # DATASET
     # Patchify hand-labeled data PLUS NIR data
     HAND_DIR = os.path.join(DATA_DIR, "hand")
@@ -235,7 +239,7 @@ def train_set(set_name):
 
     # Patchify watershed data (pre-patchified)
     WS_DIR = os.path.join(DATA_DIR, "watershed")
-    WS_RGBI_DIR = os.path.join(WS_DIR, f"rgbi/{set_name}/512")
+    WS_RGBI_DIR = os.path.join(WS_DIR, f"rgbi/{rgb_override}/512")
     WS_LABEL_DIR = os.path.join(WS_DIR, f"labels/{set_name}/512")
 
     ws_rgbi = glob.glob(os.path.join(WS_RGBI_DIR, "*.tif"))
@@ -261,7 +265,8 @@ def train_set(set_name):
     # MODEL
 
     # Data structure
-    stats = ["mean_biou", "tree_biou", "bg_biou"]
+    stats = ["loss", "val_loss", "iou", "val_iou", "mean_biou", "tree_biou", "bg_biou"]
+
     data = np.zeros((N_FOLDS, len(stats)))
 
     # Initialize the KFold
@@ -298,11 +303,11 @@ def train_set(set_name):
             cb=cb,
         )
 
-        # # Loss and accuracies from each epoch
-        # loss = history.history["loss"]
-        # val_loss = history.history["val_loss"]
-        # iou = history.history[list(history.history.keys())[1]]
-        # val_iou = history.history[list(history.history.keys())[3]]
+        # Loss and accuracies from each epoch
+        loss = history.history["loss"]
+        val_loss = history.history["val_loss"]
+        iou = history.history[list(history.history.keys())[1]]
+        val_iou = history.history[list(history.history.keys())[3]]
 
         # Test the model on the preserved test data
         y_pred = model.predict(X_test)
@@ -337,4 +342,4 @@ def train_set(set_name):
 
 
 for set_name in tqdm(SET_NAMES, desc="Set", total=len(SET_NAMES)):
-    train_set(set_name)
+    train_set(set_name, rgb_override="loose")
