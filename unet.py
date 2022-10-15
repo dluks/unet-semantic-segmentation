@@ -259,7 +259,6 @@ def train_set(set_name):
     )
 
     # MODEL
-    cb = callbacks(set_name)
 
     # Data structure
     stats = ["mean_biou", "tree_biou", "bg_biou"]
@@ -285,7 +284,10 @@ def train_set(set_name):
         X_test_fold = X_train[itest]
         y_test_fold = y_train[itest]
 
-        model, history = train_unet(
+        # Set callbacks each iteration so that logs are stored in new
+        # directory
+        cb = callbacks(set_name)
+        model, _ = train_unet(
             X_train_fold,
             y_train_fold,
             X_test_fold,
@@ -293,7 +295,7 @@ def train_set(set_name):
             batch_size=BATCH_SIZE,
             epochs=EPOCHS,
             eta=ETA,
-            cb=cb
+            cb=cb,
         )
 
         # # Loss and accuracies from each epoch
