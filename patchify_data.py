@@ -33,11 +33,11 @@ def patchify_data(rgb_in, labels_in, rgb_out, labels_out, patch_size=512):
     if not os.path.exists(labels_out):
         os.makedirs(labels_out)
 
-    for k in range(len(rgbs)):
-        rgb_name = rgbs[k].split("/")[-1].split(".tif")[0]
-        label_name = labels[k].split("/")[-1].split(".tif")[0]
-        rgb = tiff.imread(rgbs[k])
-        label = tiff.imread(labels[k])
+    for rgb, label in zip(rgbs, labels):
+        rgb_name = rgb.split("/")[-1].split(".tif")[0]
+        label_name = label.split("/")[-1].split(".tif")[0]
+        rgb = tiff.imread(rgb)
+        label = tiff.imread(label)
 
         patches_train = patchify(
             rgb,
