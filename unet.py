@@ -9,6 +9,7 @@ from patchify import patchify
 from sklearn.model_selection import KFold, train_test_split
 import tensorflow as tf
 from tensorflow import keras
+from keras import backend as K
 from tensorflow.keras.layers import (
     Activation,
     BatchNormalization,
@@ -37,7 +38,9 @@ BATCH_SIZE = 16
 tf.get_logger().setLevel("ERROR")
 
 
-def patch_train_label(raster, labels, img_size, channels=False, merge_channel=False):
+def patch_train_label(
+    raster, labels, img_size, channels=False, merge_channel=False, mask_class=False
+):
     assert len(raster) > 0, "Raster list is empty."
     samp_rast = tiff.imread(raster[0])
     img_base_size = samp_rast.shape[0]
@@ -77,7 +80,13 @@ def patch_train_label(raster, labels, img_size, channels=False, merge_channel=Fa
             -1, img_size, img_size
         )
 
-    data_label = (data_label > 0).astype("int")
+    if mask_class:
+        print("Old mask class:", data_label.max())
+        data_label = ((data_label > 0) & (data_label < data_label.max())).astype("int")
+        data_label[np.where(data_label == data_label.max())] = -1
+        print("New mask class", data_label.min())
+    else:
+        data_label = (data_label > 0).astype("int")
     data_label = np.expand_dims(data_label, axis=-1)
     data_train = data_train.astype("float") / 255
 
@@ -142,6 +151,12 @@ def build_unet(input_shape, aug=False):
     return model
 
 
+def masked_loss_function(y_true, y_pred):
+    mask = K.cast(K.not_equal(y_true, -1), K.floatx())
+    y_true = K.cast(y_true, K.floatx())
+    return K.binary_crossentropy(y_true * mask, y_pred * mask)
+
+
 def train_unet(
     X_train,
     y_train,
@@ -158,7 +173,7 @@ def train_unet(
     epochs = epochs
     model.compile(
         optimizer=Adam(learning_rate=eta),
-        loss="binary_crossentropy",
+        loss=masked_loss_function,
         metrics=[BinaryIoU(target_class_ids=[1], threshold=0.5)],
     )
     history = model.fit(
@@ -247,7 +262,9 @@ def train_set(set_name, rgb_override=False):
     ws_rgbi.sort()
     ws_labels.sort()
 
-    data_train, data_label = patch_train_label(ws_rgbi, ws_labels, 128, channels=3)
+    data_train, data_label = patch_train_label(
+        ws_rgbi, ws_labels, 128, channels=3, mask_class=True
+    )
 
     # Always use the hand-labeled test split as final test (outside KF CV) because
     # we know it is higher quality
@@ -267,7 +284,7 @@ def train_set(set_name, rgb_override=False):
     # Data structure
     stats = ["loss", "val_loss", "iou", "val_iou", "mean_biou", "tree_biou", "bg_biou"]
 
-    data = np.zeros((N_FOLDS, len(stats)))
+    data = np.zeros((N_FOLDS, len(stats)), dtype=object)
 
     # Initialize the KFold
     kf = KFold(n_splits=N_FOLDS, shuffle=True, random_state=7)
@@ -292,7 +309,7 @@ def train_set(set_name, rgb_override=False):
         # Set callbacks each iteration so that logs are stored in new
         # directory
         cb = callbacks(set_name)
-        model, _ = train_unet(
+        model, history = train_unet(
             X_train_fold,
             y_train_fold,
             X_test_fold,
@@ -329,6 +346,10 @@ def train_set(set_name, rgb_override=False):
 
         # Log the five stats according to their K-Fold and parameter iteration
         stats = [
+            loss,
+            val_loss,
+            iou,
+            val_iou,
             pred_biou,
             pred_tree_biou,
             pred_bg_biou,
