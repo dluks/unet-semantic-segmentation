@@ -19,7 +19,7 @@ from tensorflow.keras.layers import (
     Input,
     MaxPool2D,
 )
-from tensorflow.keras.metrics import BinaryIoU
+from tensorflow.keras.metrics import BinaryIoU, MeanIoU
 from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 from tqdm import tqdm
@@ -28,6 +28,7 @@ from tqdm import tqdm
 BASE_LOGS_DIR = "logs"
 DATA_DIR = "../../data/"
 SET_NAMES = ["masked"]
+MASK_VALUE = -1
 
 # Hyperparams
 N_FOLDS = 10
@@ -83,8 +84,8 @@ def patch_train_label(
     if mask_class:
         print("Old mask class:", data_label.max())
         data_label = ((data_label > 0) & (data_label < data_label.max())).astype("int")
-        data_label[np.where(data_label == data_label.max())] = -1
-        print("New mask class", data_label.min())
+        data_label[np.where(data_label == data_label.max())] = MASK_VALUE
+        print("New mask class:", data_label.min())
     else:
         data_label = (data_label > 0).astype("int")
     data_label = np.expand_dims(data_label, axis=-1)
@@ -152,7 +153,7 @@ def build_unet(input_shape, aug=False):
 
 
 def masked_loss_function(y_true, y_pred):
-    mask = K.cast(K.not_equal(y_true, -1), K.floatx())
+    mask = K.cast(K.not_equal(y_true, MASK_VALUE), K.floatx())
     y_true = K.cast(y_true, K.floatx())
     return K.binary_crossentropy(y_true * mask, y_pred * mask)
 
@@ -174,7 +175,7 @@ def train_unet(
     model.compile(
         optimizer=Adam(learning_rate=eta),
         loss=masked_loss_function,
-        metrics=[BinaryIoU(target_class_ids=[1], threshold=0.5)],
+        metrics=[MeanIoU(num_classes=3, ignore_class=MASK_VALUE)],
     )
     history = model.fit(
         X_train,
@@ -270,7 +271,10 @@ def train_set(set_name, rgb_override=False):
     # we know it is higher quality
     X_train = np.concatenate((X_train, data_train), axis=0)
     y_train = np.concatenate((y_train, data_label), axis=0)
-
+    
+    print("% BG:", np.count_nonzero(y_train == 0) / len(y_train.ravel()))
+    print("% Trees:", np.count_nonzero(y_train == 1) / len(y_train.ravel()))
+    print("% Masked:", np.count_nonzero(y_train == -1) / len(y_train.ravel()))
     print(
         f"\nSizes after adding watershed data:\n\
     X_train: {X_train.shape}\n\
@@ -278,6 +282,7 @@ def train_set(set_name, rgb_override=False):
     X_test: {X_test.shape}\n\
     y_test: {y_test.shape}"
     )
+    
 
     # MODEL
 
@@ -308,7 +313,7 @@ def train_set(set_name, rgb_override=False):
 
         # Set callbacks each iteration so that logs are stored in new
         # directory
-        cb = callbacks(set_name)
+        cb = callbacks(f"KF{i+1}of{N_FOLDS}_{set_name}")
         model, history = train_unet(
             X_train_fold,
             y_train_fold,
