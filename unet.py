@@ -27,7 +27,7 @@ from tqdm import tqdm
 # Config
 BASE_LOGS_DIR = "logs"
 DATA_DIR = "../../data/"
-SET_NAMES = ["masked"]
+SET_NAMES = ["simp_imp"]
 MASK_VALUE = -1
 
 # Hyperparams
@@ -127,8 +127,8 @@ def data_augmentation():
         [
             keras.layers.RandomFlip("horizontal_and_vertical"),
             keras.layers.RandomRotation(0.5),
-            keras.layers.RandomContrast(0.1),
-            keras.layers.RandomBrightness(0.1),
+            # keras.layers.RandomContrast(0.1),
+            # keras.layers.RandomBrightness(0.1),
         ]
     )
     return augs
@@ -156,37 +156,6 @@ def masked_loss_function(y_true, y_pred):
     mask = K.cast(K.not_equal(y_true, MASK_VALUE), K.floatx())
     y_true = K.cast(y_true, K.floatx())
     return K.binary_crossentropy(y_true * mask, y_pred * mask)
-
-
-def train_unet(
-    X_train,
-    y_train,
-    X_test,
-    y_test,
-    batch_size=16,
-    epochs=100,
-    eta=1e-2,
-    cb=None,
-):
-    input_shape = X_train.shape[1:]
-    model = build_unet(input_shape)
-    batch_size = batch_size
-    epochs = epochs
-    model.compile(
-        optimizer=Adam(learning_rate=eta),
-        loss=masked_loss_function,
-        metrics=[MeanIoU(num_classes=3, ignore_class=MASK_VALUE)],
-    )
-    history = model.fit(
-        X_train,
-        y_train,
-        batch_size=batch_size,
-        epochs=epochs,
-        validation_data=(X_test, y_test),
-        verbose=1,
-        callbacks=cb,
-    )
-    return model, history
 
 
 def callbacks(name):
@@ -225,9 +194,45 @@ def callbacks(name):
     return cb
 
 
-def train_set(set_name, rgb_override=False):
-    if not rgb_override:
-        rgb_override = set_name
+def train_unet(
+    X_train,
+    y_train,
+    X_test,
+    y_test,
+    batch_size=16,
+    epochs=100,
+    eta=1e-2,
+    cb=None,
+    masked_loss=False
+):
+    input_shape = X_train.shape[1:]
+    model = build_unet(input_shape)
+    batch_size = batch_size
+    epochs = epochs
+    if masked_loss:
+        loss = masked_loss_function
+        metrics = MeanIoU(num_classes=3, ignore_class=MASK_VALUE)
+    else:
+        loss = "binary_crossentropy"
+        metrics = BinaryIoU(target_class_ids=[1], threshold=0.5)
+    model.compile(
+        optimizer=Adam(learning_rate=eta),
+        loss=loss,
+        metrics=[metrics],
+    )
+    history = model.fit(
+        X_train,
+        y_train,
+        batch_size=batch_size,
+        epochs=epochs,
+        validation_data=(X_test, y_test),
+        verbose=1,
+        callbacks=cb,
+    )
+    return model, history
+
+
+def train_set(set_name, ws_rgb, ws_label):
     # DATASET
     # Patchify hand-labeled data PLUS NIR data
     HAND_DIR = os.path.join(DATA_DIR, "hand")
@@ -255,16 +260,15 @@ def train_set(set_name, rgb_override=False):
 
     # Patchify watershed data (pre-patchified)
     WS_DIR = os.path.join(DATA_DIR, "watershed")
-    WS_RGBI_DIR = os.path.join(WS_DIR, f"rgbi/{rgb_override}/512")
-    WS_LABEL_DIR = os.path.join(WS_DIR, f"labels/{set_name}/512")
-
+    WS_RGBI_DIR = os.path.join(WS_DIR, f"rgbi/{ws_rgb}/512")
+    WS_LABEL_DIR = os.path.join(WS_DIR, f"labels/{ws_label}/512")
     ws_rgbi = glob.glob(os.path.join(WS_RGBI_DIR, "*.tif"))
     ws_labels = glob.glob(os.path.join(WS_LABEL_DIR, "*.tif"))
     ws_rgbi.sort()
     ws_labels.sort()
 
     data_train, data_label = patch_train_label(
-        ws_rgbi, ws_labels, 128, channels=3, mask_class=True
+        ws_rgbi, ws_labels, 128, channels=3, mask_class=False
     )
 
     # Always use the hand-labeled test split as final test (outside KF CV) because
@@ -272,9 +276,15 @@ def train_set(set_name, rgb_override=False):
     X_train = np.concatenate((X_train, data_train), axis=0)
     y_train = np.concatenate((y_train, data_label), axis=0)
     
-    print("% BG:", np.count_nonzero(y_train == 0) / len(y_train.ravel()))
-    print("% Trees:", np.count_nonzero(y_train == 1) / len(y_train.ravel()))
-    print("% Masked:", np.count_nonzero(y_train == -1) / len(y_train.ravel()))
+    pct_bg = (np.count_nonzero(y_train == 0) / len(y_train.ravel())) * 100
+    pct_trees = (np.count_nonzero(y_train == 1) / len(y_train.ravel())) * 100
+    pct_masked = (np.count_nonzero(y_train == -1) / len(y_train.ravel())) * 100
+    print("\nWatershed percents")
+    print("--------------------")
+    print(f"% BG: {pct_bg:.2f}%")
+    print(f"% Trees: {pct_trees:.2f}%")
+    print(f"% Masked: {pct_masked:.2f}%")
+    
     print(
         f"\nSizes after adding watershed data:\n\
     X_train: {X_train.shape}\n\
@@ -282,10 +292,8 @@ def train_set(set_name, rgb_override=False):
     X_test: {X_test.shape}\n\
     y_test: {y_test.shape}"
     )
-    
 
     # MODEL
-
     # Data structure
     stats = ["loss", "val_loss", "iou", "val_iou", "mean_biou", "tree_biou", "bg_biou"]
 
@@ -368,4 +376,5 @@ def train_set(set_name, rgb_override=False):
 
 
 for set_name in tqdm(SET_NAMES, desc="Set", total=len(SET_NAMES)):
-    train_set(set_name, rgb_override="loose")
+    train_set(set_name, ws_rgb="strict/simple_imp", ws_label="strict")
+    
