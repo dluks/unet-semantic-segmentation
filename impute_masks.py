@@ -21,7 +21,7 @@ for rgb, loose, strict in zip(rgb_in, loose_in, strict_in):
     # Get the filename
     fn = rgb.split("/")[-1].split(".tif")[0]
     # Load rgb and loose and strict labels
-    rgb = tiff.imread(rgb)
+    rgb = tiff.imread(rgb).astype(np.float32)
     loose = tiff.imread(loose)
     strict = tiff.imread(strict)
     # Find where loose labels exist but not strict
@@ -33,22 +33,22 @@ for rgb, loose, strict in zip(rgb_in, loose_in, strict_in):
         # Replace values of "bad" labels with the channel mean
         for k, m in enumerate(rgb_mns):
             rgb[idx[0], idx[1], k] = m
-    elif MODE == "simple_impute":
+    elif MODE == "simple_imp":
         imputer = SimpleImputer(missing_values=np.nan, strategy="mean")
         for i in range(rgb.shape[-1]):
             # First replace all "masked" pixels with nans
             rgb[idx[0], idx[1], i] = np.nan
             rgb[..., i] = imputer.fit_transform(rgb[..., i])
         # Convert datatype back to int
-        rgb = rgb.astype(int)
-    elif MODE == "knn_impute":
+        rgb = rgb.astype(np.uint8)
+    elif MODE == "knn_imp":
         imputer = KNNImputer(missing_values=np.nan)
         for i in range(rgb.shape[-1]):
             # First replace all "masked" pixels with nans
             rgb[idx[0], idx[1], i] = np.nan
             rgb[..., i] = imputer.fit_transform(rgb[..., i])
         # Convert datatype back to int
-        rgb = rgb.astype(int)
+        rgb = rgb.astype(np.uint8)
 
     # Save rgb
     if not os.path.exists(out_dir):
