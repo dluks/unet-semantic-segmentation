@@ -7,13 +7,12 @@ import tifffile as tiff
 
 PATCH_SIZE = 512
 DATA_DIR = "../../data/watershed/"
-LABEL_TYPE = "masked"
 
 # Unpatchified directories
-LABELS_IN = os.path.join(DATA_DIR, f"labels/{LABEL_TYPE}")
+IMG_IN = os.path.join(DATA_DIR, f"rgbi/strict/simple_imp")
 
 # Patchified directories
-LABELS_OUT = os.path.join(DATA_DIR, f"labels/{LABEL_TYPE}")
+IMG_OUT = IMG_IN
 
 
 def patchify_data(img_in, img_out, patch_size=512):
@@ -58,7 +57,7 @@ def patchify_data(img_in, img_out, patch_size=512):
 
 # %%
 patchify_data(
-    LABELS_IN,
-    LABELS_OUT,
+    IMG_IN,
+    IMG_OUT,
     PATCH_SIZE,
 )
