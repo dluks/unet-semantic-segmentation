@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-import glob
 import os
 import datetime
 
 import numpy as np
-import tifffile as tiff
-from patchify import patchify
-from sklearn.model_selection import KFold, train_test_split
+from sklearn.model_selection import KFold
 import tensorflow as tf
 from tensorflow import keras
 from keras import backend as K
@@ -23,6 +20,7 @@ from tensorflow.keras.metrics import BinaryIoU, MeanIoU
 from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 from tqdm import tqdm
+from utils import prep_data
 
 # Config
 BASE_LOGS_DIR = "logs"
@@ -37,65 +35,6 @@ ETA = 1e-2
 BATCH_SIZE = 16
 
 tf.get_logger().setLevel("ERROR")
-
-
-def patch_train_label(
-    raster, labels, img_size, channels=False, merge_channel=False, mask_class=False
-):
-    assert len(raster) > 0, "Raster list is empty."
-    samp_rast = tiff.imread(raster[0])
-    img_base_size = samp_rast.shape[0]
-    n = len(raster)
-    m = (img_base_size // img_size) ** 2
-
-    if not channels:
-        channels = samp_rast.shape[-1]
-
-    if merge_channel:
-        channels += tiff.imread(merge_channel[0]).shape[-1]
-
-    data_train = np.zeros((n * m, img_size, img_size, channels))
-    data_label = np.zeros((n * m, img_size, img_size))
-
-    for k in range(n):
-        if merge_channel:
-            r = np.concatenate(
-                (tiff.imread(raster[k]), tiff.imread(merge_channel[k])), axis=-1
-            )
-        else:
-            r = tiff.imread(raster[k])[..., :channels]
-
-        # Only read in the specified number of channels from input raster
-        patches_train = patchify(
-            r,
-            (img_size, img_size, channels),
-            step=img_size,
-        )
-        patches_label = patchify(
-            tiff.imread(labels[k]), (img_size, img_size), step=img_size
-        )
-        data_train[k * m : (k + 1) * m, :, :, :] = patches_train.reshape(
-            -1, img_size, img_size, channels
-        )
-        data_label[k * m : (k + 1) * m, :, :] = patches_label.reshape(
-            -1, img_size, img_size
-        )
-
-    if mask_class:
-        print("Old mask class:", data_label.max())
-        data_label = ((data_label > 0) & (data_label < data_label.max())).astype("int")
-        data_label[np.where(data_label == data_label.max())] = MASK_VALUE
-        print("New mask class:", data_label.min())
-    else:
-        data_label = (data_label > 0).astype("int")
-    data_label = np.expand_dims(data_label, axis=-1)
-    data_train = data_train.astype("float") / 255
-
-    print(
-        f"\nPatched data sizes:\ndata_train: {data_train.shape}\ndata_label: {data_label.shape}"
-    )
-
-    return data_train, data_label
 
 
 # Construct the U-Net
@@ -203,7 +142,7 @@ def train_unet(
     epochs=100,
     eta=1e-2,
     cb=None,
-    masked_loss=False
+    masked_loss=False,
 ):
     input_shape = X_train.shape[1:]
     model = build_unet(input_shape)
@@ -233,65 +172,7 @@ def train_unet(
 
 
 def train_set(set_name, ws_rgb, ws_label):
-    # DATASET
-    # Patchify hand-labeled data PLUS NIR data
-    HAND_DIR = os.path.join(DATA_DIR, "hand")
-    HAND_RGB_DIR = os.path.join(HAND_DIR, "rgb")
-    HAND_LABEL_DIR = os.path.join(HAND_DIR, "label")
-
-    patch_rgb = glob.glob(os.path.join(HAND_RGB_DIR, "*.tif"))
-    patch_label = glob.glob(os.path.join(HAND_LABEL_DIR, "*.tif"))
-    patch_rgb.sort()
-    patch_label.sort()
-
-    data_train, data_label = patch_train_label(patch_rgb, patch_label, 128)
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        data_train, data_label, test_size=0.33, shuffle=True, random_state=157
-    )
-
-    print(
-        f"\nSizes with only hand-labeled data:\n\
-    X_train: {X_train.shape}\n\
-    y_train: {y_train.shape}\n\
-    X_test: {X_test.shape}\n\
-    y_test: {y_test.shape}"
-    )
-
-    # Patchify watershed data (pre-patchified)
-    WS_DIR = os.path.join(DATA_DIR, "watershed")
-    WS_RGBI_DIR = os.path.join(WS_DIR, f"rgbi/{ws_rgb}/512")
-    WS_LABEL_DIR = os.path.join(WS_DIR, f"labels/{ws_label}/512")
-    ws_rgbi = glob.glob(os.path.join(WS_RGBI_DIR, "*.tif"))
-    ws_labels = glob.glob(os.path.join(WS_LABEL_DIR, "*.tif"))
-    ws_rgbi.sort()
-    ws_labels.sort()
-
-    data_train, data_label = patch_train_label(
-        ws_rgbi, ws_labels, 128, channels=3, mask_class=False
-    )
-
-    # Always use the hand-labeled test split as final test (outside KF CV) because
-    # we know it is higher quality
-    X_train = np.concatenate((X_train, data_train), axis=0)
-    y_train = np.concatenate((y_train, data_label), axis=0)
-    
-    pct_bg = (np.count_nonzero(y_train == 0) / len(y_train.ravel())) * 100
-    pct_trees = (np.count_nonzero(y_train == 1) / len(y_train.ravel())) * 100
-    pct_masked = (np.count_nonzero(y_train == -1) / len(y_train.ravel())) * 100
-    print("\nWatershed percents")
-    print("--------------------")
-    print(f"% BG: {pct_bg:.2f}%")
-    print(f"% Trees: {pct_trees:.2f}%")
-    print(f"% Masked: {pct_masked:.2f}%")
-    
-    print(
-        f"\nSizes after adding watershed data:\n\
-    X_train: {X_train.shape}\n\
-    y_train: {y_train.shape}\n\
-    X_test: {X_test.shape}\n\
-    y_test: {y_test.shape}"
-    )
+    X_train, y_train, X_test, y_test = prep_data(DATA_DIR, "hand", ws_rgb, ws_label)
 
     # MODEL
     # Data structure
@@ -375,6 +256,6 @@ def train_set(set_name, ws_rgb, ws_label):
         np.save(f"stats/{N_FOLDS}folds_CV_{set_name}.npy", data)
 
 
-for set_name in tqdm(SET_NAMES, desc="Set", total=len(SET_NAMES)):
-    train_set(set_name, ws_rgb="strict/simple_imp", ws_label="strict")
-    
+if __name__ == "__main__":
+    for set_name in tqdm(SET_NAMES, desc="Set", total=len(SET_NAMES)):
+        train_set(set_name, ws_rgb="strict/simple_imp", ws_label="strict")
